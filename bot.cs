@@ -26,29 +26,35 @@ namespace cAlgo.Robots
         [Parameter("Минута открытия (Время Сервера)", DefaultValue = 1, MinValue = 0, MaxValue = 59)]
         public int TriggerMinute { get; set; }
 
-        [Parameter("Stop Loss (пункты)", DefaultValue = 50, MinValue = 1)]
-        public double StopLossInPips { get; set; }
+        [Parameter("Минимальное значение RR", DefaultValue = 2.0, MinValue = 1.0, Step = 0.1)]
+        public double MinRewardRatio { get; set; }
 
-        [Parameter("Reward Ratio (RR)", DefaultValue = 3.0, MinValue = 0.1, Step = 0.1)]
-        public double RewardRatio { get; set; }
+        [Parameter("Кол-во свечей для анализа", DefaultValue = 20, MinValue = 5, MaxValue = 500)]
+        public int BarsForAnalysis { get; set; }
 
         [Parameter("Метка сделки (Label)", DefaultValue = "DailyAsianOpenRiskRR")]
         public string TradeLabel { get; set; }
 
+        // --- Индикаторы ---
+        private Fractals _fractals;
+
         // --- Внутренние переменные ---
         private DateTime _lastTradeDate;
         private Symbol _symbol;
+        private TimeFrame _hourlyTimeframe = TimeFrame.Hour;
 
         // --- Методы cBot ---
         protected override void OnStart()
         {
             _symbol = Symbols.GetSymbol(SymbolName);
             if (_symbol == null) { Print($"Ошибка: Символ '{SymbolName}' не найден."); Stop(); return; }
-            if (StopLossInPips <= 0) { Print("Внимание: 'Stop Loss (пункты)' должен быть > 0."); }
-            if (RewardRatio <= 0) { Print("Внимание: 'Reward Ratio (RR)' должен быть > 0."); }
+
+            // Инициализация индикатора фракталов для часового таймфрейма
+            _fractals = Indicators.Fractals(5);
+
             Print($"Бот запущен для символа: {_symbol.Name}");
             Print($"Время открытия сделки (Сервер): {TriggerHour:D2}:{TriggerMinute:D2}");
-            Print($"Риск: {RiskPercent}%, SL: {StopLossInPips} пп, RR: 1:{RewardRatio}");
+            Print($"Риск: {RiskPercent}%, Минимальный RR: {MinRewardRatio}");
             _lastTradeDate = DateTime.MinValue;
         }
 
@@ -64,9 +70,42 @@ namespace cAlgo.Robots
             {
                 _lastTradeDate = serverTime.Date;
 
-                if (StopLossInPips <= 0) { Print($"Ошибка: Stop Loss ({StopLossInPips} пп) должен быть > 0. Сделка отменена."); return; }
-                if (RewardRatio <= 0) { Print($"Ошибка: Reward Ratio ({RewardRatio}) должен быть > 0. Сделка отменена."); return; }
+                if (MinRewardRatio < 2.0) { Print($"Внимание: Минимальный RR ({MinRewardRatio}) меньше 2.0"); }
                 if (Account.Equity <= 0) { Print("Ошибка: Экьюти <= 0. Сделка отменена."); return; }
+
+                // Получаем данные часового таймфрейма
+                var hourlyBars = MarketData.GetBars(_hourlyTimeframe);
+                if (hourlyBars == null || hourlyBars.Count < BarsForAnalysis) {
+                    Print($"Ошибка: Недостаточно исторических данных часового таймфрейма. Требуется минимум {BarsForAnalysis} баров.");
+                    return;
+                }
+
+                // --- Расчет уровней SL и TP ---
+                double? stopLossPrice = CalculateStopLossPrice(hourlyBars, OrderTradeType);
+                if (!stopLossPrice.HasValue) {
+                    Print("Ошибка: Не удалось определить уровень ликвидности для Stop Loss. Сделка отменена.");
+                    return;
+                }
+
+                double? takeProfitPrice = CalculateTakeProfitPrice(hourlyBars, OrderTradeType);
+                if (!takeProfitPrice.HasValue) {
+                    Print("Ошибка: Не удалось определить фрактал для Take Profit. Сделка отменена.");
+                    return;
+                }
+
+                // Текущая цена для точки входа
+                double entryPrice = (OrderTradeType == TradeType.Buy) ? _symbol.Ask : _symbol.Bid;
+                
+                // Рассчитываем расстояние в пунктах до SL и TP
+                double stopLossInPips = Math.Abs((entryPrice - stopLossPrice.Value) / _symbol.PipSize);
+                double takeProfitInPips = Math.Abs((takeProfitPrice.Value - entryPrice) / _symbol.PipSize);
+                
+                // Проверяем RR
+                double currentRR = takeProfitInPips / stopLossInPips;
+                if (currentRR < MinRewardRatio) {
+                    Print($"Предупреждение: Текущее RR ({currentRR:F2}) меньше минимального ({MinRewardRatio}). Сделка отменена.");
+                    return;
+                }
 
                 // --- Расчет объема ---
                 double riskAmount = Account.Equity * (RiskPercent / 100.0);
@@ -76,15 +115,10 @@ namespace cAlgo.Robots
                 }
                 if (pipValuePerLot <= 0) { Print($"Ошибка: Не удалось рассчитать стоимость пункта (Pip Value = {pipValuePerLot}). Сделка отменена."); return; }
 
-                double calculatedVolumeInLots = riskAmount / (StopLossInPips * pipValuePerLot);
-
-                // !! ИЗМЕНЕНИЕ: Используем Convert.ToInt64() для результата QuantityToVolumeInUnits !!
-                // Вместо: long volumeInUnits = (long)_symbol.QuantityToVolumeInUnits(calculatedVolumeInLots);
+                double calculatedVolumeInLots = riskAmount / (stopLossInPips * pipValuePerLot);
                 long volumeInUnits = Convert.ToInt64(_symbol.QuantityToVolumeInUnits(calculatedVolumeInLots));
-
-
                 var normalizedVolumeResult = _symbol.NormalizeVolumeInUnits(volumeInUnits, RoundingMode.Down);
-                long normalizedVolumeInUnits = Convert.ToInt64(normalizedVolumeResult); // Оставляем Convert.ToInt64 здесь тоже
+                long normalizedVolumeInUnits = Convert.ToInt64(normalizedVolumeResult);
 
                 if (normalizedVolumeInUnits < _symbol.VolumeInUnitsMin) { Print($"Предупреждение: Рассчитанный объем < мин. Сделка отменена."); return; }
                 if (normalizedVolumeInUnits > (long)_symbol.VolumeInUnitsMax) { Print($"Предупреждение: Рассчитанный объем > макс. Используется макс."); normalizedVolumeInUnits = (long)_symbol.VolumeInUnitsMax; }
@@ -93,17 +127,7 @@ namespace cAlgo.Robots
 
                 Print($"Время сделки ({serverTime}). Риск: {RiskPercent}%, Экьюти: {Account.Equity:F2} {Account.Asset.Name}, Сумма: {riskAmount:F2} {Account.Asset.Name}.");
                 Print($"Расчетный объем: {finalVolumeInLots:F5} лот ({normalizedVolumeInUnits} юнитов).");
-
-                // --- Расчет SL и TP цен ---
-                double? stopLossPrice = null;
-                double? takeProfitPrice = null;
-                double entryPrice = (OrderTradeType == TradeType.Buy) ? _symbol.Ask : _symbol.Bid;
-                stopLossPrice = (OrderTradeType == TradeType.Buy) ? entryPrice - StopLossInPips * _symbol.PipSize : entryPrice + StopLossInPips * _symbol.PipSize;
-                double calculatedTakeProfitPips = StopLossInPips * RewardRatio;
-                if(calculatedTakeProfitPips > 0) {
-                    takeProfitPrice = (OrderTradeType == TradeType.Buy) ? entryPrice + calculatedTakeProfitPips * _symbol.PipSize : entryPrice - calculatedTakeProfitPips * _symbol.PipSize;
-                }
-                Print($"SL: {StopLossInPips} пп ({stopLossPrice:F5}), TP: {calculatedTakeProfitPips:F1} пп ({takeProfitPrice:F5}) (RR 1:{RewardRatio}).");
+                Print($"SL: {stopLossInPips:F1} пп ({stopLossPrice:F5}), TP: {takeProfitInPips:F1} пп ({takeProfitPrice:F5}) (RR 1:{currentRR:F2}).");
                 Print($"Открытие {OrderTradeType} по {SymbolName}...");
 
                 // --- Открытие ордера ---
@@ -124,6 +148,145 @@ namespace cAlgo.Robots
                 }
                 catch (Exception ex) {
                     Print($"ИСКЛЮЧЕНИЕ при ExecuteMarketOrderAsync: {ex.Message}");
+                }
+            }
+        }
+
+        // Метод для определения цены Stop Loss на основе уровня ликвидности
+        private double? CalculateStopLossPrice(Bars hourlyBars, TradeType tradeType)
+        {
+            if (tradeType == TradeType.Buy)
+            {
+                // Для Buy - ищем минимум за последние N часовых свечей (уровень ликвидности ниже текущей цены)
+                int lookbackBars = Math.Min(BarsForAnalysis, hourlyBars.Count - 1);
+                double lowestLow = double.MaxValue;
+                
+                for (int i = 1; i <= lookbackBars; i++)
+                {
+                    double currentLow = hourlyBars.LowPrices[hourlyBars.Count - i];
+                    if (currentLow < lowestLow)
+                    {
+                        lowestLow = currentLow;
+                    }
+                }
+                
+                // Добавляем небольшой отступ для надежности (5 пипсов)
+                double slPrice = lowestLow - (5 * _symbol.PipSize);
+                
+                Print($"Найден уровень ликвидности для Buy: {lowestLow}, SL установлен на: {slPrice}");
+                return slPrice;
+            }
+            else // TradeType.Sell
+            {
+                // Для Sell - ищем максимум за последние N часовых свечей (уровень ликвидности выше текущей цены)
+                int lookbackBars = Math.Min(BarsForAnalysis, hourlyBars.Count - 1);
+                double highestHigh = double.MinValue;
+                
+                for (int i = 1; i <= lookbackBars; i++)
+                {
+                    double currentHigh = hourlyBars.HighPrices[hourlyBars.Count - i];
+                    if (currentHigh > highestHigh)
+                    {
+                        highestHigh = currentHigh;
+                    }
+                }
+                
+                // Добавляем небольшой отступ для надежности (5 пипсов)
+                double slPrice = highestHigh + (5 * _symbol.PipSize);
+                
+                Print($"Найден уровень ликвидности для Sell: {highestHigh}, SL установлен на: {slPrice}");
+                return slPrice;
+            }
+        }
+
+        // Метод для определения цены Take Profit на основе часового фрактала
+        private double? CalculateTakeProfitPrice(Bars hourlyBars, TradeType tradeType)
+        {
+            // Определяем количество баров для анализа фракталов
+            int bars = Math.Min(BarsForAnalysis, hourlyBars.Count - 3);
+            
+            if (tradeType == TradeType.Buy)
+            {
+                // Для Buy - ищем верхний фрактал (потенциальное сопротивление)
+                double? highestFractal = null;
+                double currentPrice = _symbol.Ask;
+                
+                // Проверяем фракталы начиная с более поздних (ближайшие к текущему времени)
+                for (int i = 2; i < bars; i++)
+                {
+                    int index = hourlyBars.Count - i;
+                    
+                    // Проверяем, есть ли верхний фрактал
+                    if (!double.IsNaN(_fractals.UpFractal[index]) && _fractals.UpFractal[index] > 0)
+                    
+                    if (!double.IsNaN(_fractals.UpFractal[index]) && _fractals.UpFractal[index] > 0)
+                    {
+                        double fractalPrice = hourlyBars.HighPrices[index];
+                        // Фрактал должен быть выше текущей цены
+                        if (fractalPrice > currentPrice)
+                        {
+                            if (!highestFractal.HasValue || fractalPrice > highestFractal.Value)
+                            {
+                                highestFractal = fractalPrice;
+                            }
+                        }
+                    }
+                }
+                
+                if (highestFractal.HasValue)
+                {
+                    Print($"Найден верхний фрактал для Buy TP: {highestFractal.Value}");
+                    return highestFractal.Value;
+                }
+                else
+                {
+                    // Если фрактал не найден, используем максимум + отступ
+                    double highest = hourlyBars.HighPrices.Maximum(bars);
+                    double tpPrice = highest + (10 * _symbol.PipSize);
+                    Print($"Фрактал не найден для Buy TP, используем максимум + отступ: {tpPrice}");
+                    return tpPrice;
+                }
+            }
+            else // TradeType.Sell
+            {
+                // Для Sell - ищем нижний фрактал (потенциальная поддержка)
+                double? lowestFractal = null;
+                double currentPrice = _symbol.Bid;
+                
+                // Проверяем фракталы начиная с более поздних (ближайшие к текущему времени)
+                for (int i = 2; i < bars; i++)
+                {
+                    int index = hourlyBars.Count - i;
+                    
+                    // Проверяем, есть ли нижний фрактал
+                    if (!double.IsNaN(_fractals.DownFractal[index]) && _fractals.DownFractal[index] > 0)
+                    
+                    if (!double.IsNaN(_fractals.DownFractal[index]) && _fractals.DownFractal[index] > 0)
+                    {
+                        double fractalPrice = hourlyBars.LowPrices[index];
+                        // Фрактал должен быть ниже текущей цены
+                        if (fractalPrice < currentPrice)
+                        {
+                            if (!lowestFractal.HasValue || fractalPrice < lowestFractal.Value)
+                            {
+                                lowestFractal = fractalPrice;
+                            }
+                        }
+                    }
+                }
+                
+                if (lowestFractal.HasValue)
+                {
+                    Print($"Найден нижний фрактал для Sell TP: {lowestFractal.Value}");
+                    return lowestFractal.Value;
+                }
+                else
+                {
+                    // Если фрактал не найден, используем минимум - отступ
+                    double lowest = hourlyBars.LowPrices.Minimum(bars);
+                    double tpPrice = lowest - (10 * _symbol.PipSize);
+                    Print($"Фрактал не найден для Sell TP, используем минимум - отступ: {tpPrice}");
+                    return tpPrice;
                 }
             }
         }
