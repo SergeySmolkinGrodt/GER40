@@ -29,8 +29,14 @@ namespace cAlgo.Robots
         [Parameter("Метка сделки (Label)", DefaultValue = "DailyAsianOpenRiskRR")]
         public string TradeLabel { get; set; }
 
-        [Parameter("SL Lookback Period (H1 Bars)", DefaultValue = 24, MinValue = 3, MaxValue = 200)] // Новый параметр
+        [Parameter("SL Lookback Period (H1 Bars)", DefaultValue = 24, MinValue = 3, MaxValue = 200)]
         public int SlLookbackPeriod { get; set; }
+
+        [Parameter("H4 Lookback Period (Bars)", DefaultValue = 50, MinValue = 10, MaxValue = 200)]
+        public int H4LookbackPeriod { get; set; }
+
+        [Parameter("H4 Fractal Lookback", DefaultValue = 5, MinValue = 3, MaxValue = 10)]
+        public int H4FractalLookback { get; set; }
 
         // --- Индикаторы ---
         private Fractals _fractals;
@@ -39,8 +45,71 @@ namespace cAlgo.Robots
         private DateTime _lastTradeDate;
         private Symbol _symbol;
         private TimeFrame _hourlyTimeframe = TimeFrame.Hour;
+        private TimeFrame _h4Timeframe = TimeFrame.Hour4;
+        private MarketTrend _marketTrend;
+        private enum MarketTrend { Undefined, Bullish, Bearish }
 
         // --- Методы cBot ---
+        private MarketTrend DetermineMarketTrend()
+        {
+            var h4Bars = MarketData.GetBars(_h4Timeframe, SymbolName);
+            if (h4Bars.Count < H4LookbackPeriod + H4FractalLookback)
+            {
+                Print($"Недостаточно данных для определения рыночного режима (нужно {H4LookbackPeriod + H4FractalLookback} баров, есть {h4Bars.Count})");
+                return MarketTrend.Undefined;
+            }
+
+            // Получаем фракталы на H4
+            var h4Fractals = Indicators.Fractals(h4Bars, H4FractalLookback);
+            
+            // Находим последние значимые фракталы
+            double? lastHH = null;
+            double? lastHL = null;
+            double? lastLH = null;
+            double? lastLL = null;
+
+            for (int i = h4Bars.Count - H4FractalLookback; i >= 0; i--)
+            {
+                if (!double.IsNaN(h4Fractals.UpFractal[i]))
+                {
+                    if (lastHH == null || h4Fractals.UpFractal[i] > lastHH)
+                    {
+                        lastHH = h4Fractals.UpFractal[i];
+                    }
+                }
+                if (!double.IsNaN(h4Fractals.DownFractal[i]))
+                {
+                    if (lastHL == null || h4Fractals.DownFractal[i] > lastHL)
+                    {
+                        lastHL = h4Fractals.DownFractal[i];
+                    }
+                    if (lastLL == null || h4Fractals.DownFractal[i] < lastLL)
+                    {
+                        lastLL = h4Fractals.DownFractal[i];
+                    }
+                }
+            }
+
+            // Определяем тренд
+            if (lastHH.HasValue && lastHL.HasValue)
+            {
+                if (lastHH > lastHL)
+                {
+                    return MarketTrend.Bullish;
+                }
+            }
+
+            if (lastLH.HasValue && lastLL.HasValue)
+            {
+                if (lastLL < lastLH)
+                {
+                    return MarketTrend.Bearish;
+                }
+            }
+
+            return MarketTrend.Undefined;
+        }
+
         protected override void OnStart()
         {
             _symbol = Symbols.GetSymbol(SymbolName);
@@ -66,6 +135,22 @@ namespace cAlgo.Robots
             if (_symbol == null) return;
 
             var serverTime = Server.Time;
+            
+            // Определяем рыночный режим
+            _marketTrend = DetermineMarketTrend();
+            Print($"Текущий рыночный режим: {_marketTrend}");
+            
+            // Проверяем, соответствует ли направление сделки текущему тренду
+            if (OrderTradeType == TradeType.Buy && _marketTrend != MarketTrend.Bullish)
+            {
+                Print($"Предупреждение: Направление сделки (Buy) не соответствует текущему тренду ({_marketTrend}). Сделка отменена.");
+                return;
+            }
+            else if (OrderTradeType == TradeType.Sell && _marketTrend != MarketTrend.Bearish)
+            {
+                Print($"Предупреждение: Направление сделки (Sell) не соответствует текущему тренду ({_marketTrend}). Сделка отменена.");
+                return;
+            }
             bool isTriggerTime = serverTime.Hour == TriggerHour && serverTime.Minute == TriggerMinute;
             bool tradeAlreadyOpenedToday = serverTime.Date == _lastTradeDate.Date; // Сравниваем только даты
 
