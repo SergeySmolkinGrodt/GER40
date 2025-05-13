@@ -11,7 +11,7 @@ namespace cAlgo.Robots
     public class DailyAsianOpenRisk : Robot
     {
         // --- Параметры бота ---
-        [Parameter("Название символа", DefaultValue = "GER40")]
+        [Parameter("Название символа", DefaultValue = "GER40.cash")]
         public new string SymbolName { get; set; }
 
         [Parameter("Процент риска от эквити (%)", DefaultValue = 1.0, MinValue = 0.1, MaxValue = 10.0, Step = 0.1)]
@@ -25,12 +25,6 @@ namespace cAlgo.Robots
 
         [Parameter("Минута открытия (Время Сервера)", DefaultValue = 1, MinValue = 0, MaxValue = 59)]
         public int TriggerMinute { get; set; }
-
-        [Parameter("Минимальное значение RR", DefaultValue = 2.0, MinValue = 1.0, Step = 0.1)]
-        public double MinRewardRatio { get; set; }
-
-        [Parameter("Кол-во свечей для анализа", DefaultValue = 20, MinValue = 5, MaxValue = 500)]
-        public int BarsForAnalysis { get; set; }
 
         [Parameter("Метка сделки (Label)", DefaultValue = "DailyAsianOpenRiskRR")]
         public string TradeLabel { get; set; }
@@ -54,7 +48,7 @@ namespace cAlgo.Robots
 
             Print($"Бот запущен для символа: {_symbol.Name}");
             Print($"Время открытия сделки (Сервер): {TriggerHour:D2}:{TriggerMinute:D2}");
-            Print($"Риск: {RiskPercent}%, Минимальный RR: {MinRewardRatio}");
+            Print($"Риск: {RiskPercent}%");
             _lastTradeDate = DateTime.MinValue;
         }
 
@@ -70,16 +64,11 @@ namespace cAlgo.Robots
             {
                 _lastTradeDate = serverTime.Date;
 
-                if (MinRewardRatio < 2.0) { Print($"Внимание: Минимальный RR ({MinRewardRatio}) меньше 2.0"); }
                 if (Account.Equity <= 0) { Print("Ошибка: Экьюти <= 0. Сделка отменена."); return; }
 
                 // Получаем данные часового таймфрейма
                 var hourlyBars = MarketData.GetBars(_hourlyTimeframe);
-                if (hourlyBars == null || hourlyBars.Count < BarsForAnalysis) {
-                    Print($"Ошибка: Недостаточно исторических данных часового таймфрейма. Требуется минимум {BarsForAnalysis} баров.");
-                    return;
-                }
-
+              
                 // --- Расчет уровней SL и TP ---
                 double? stopLossPrice = CalculateStopLossPrice(hourlyBars, OrderTradeType);
                 if (!stopLossPrice.HasValue) {
@@ -100,12 +89,7 @@ namespace cAlgo.Robots
                 double stopLossInPips = Math.Abs((entryPrice - stopLossPrice.Value) / _symbol.PipSize);
                 double takeProfitInPips = Math.Abs((takeProfitPrice.Value - entryPrice) / _symbol.PipSize);
                 
-                // Проверяем RR
-                double currentRR = takeProfitInPips / stopLossInPips;
-                if (currentRR < MinRewardRatio) {
-                    Print($"Предупреждение: Текущее RR ({currentRR:F2}) меньше минимального ({MinRewardRatio}). Сделка отменена.");
-                    return;
-                }
+
 
                 // --- Расчет объема ---
                 double riskAmount = Account.Equity * (RiskPercent / 100.0);
@@ -127,7 +111,7 @@ namespace cAlgo.Robots
 
                 Print($"Время сделки ({serverTime}). Риск: {RiskPercent}%, Экьюти: {Account.Equity:F2} {Account.Asset.Name}, Сумма: {riskAmount:F2} {Account.Asset.Name}.");
                 Print($"Расчетный объем: {finalVolumeInLots:F5} лот ({normalizedVolumeInUnits} юнитов).");
-                Print($"SL: {stopLossInPips:F1} пп ({stopLossPrice:F5}), TP: {takeProfitInPips:F1} пп ({takeProfitPrice:F5}) (RR 1:{currentRR:F2}).");
+                Print($"SL: {stopLossInPips:F1} пп ({stopLossPrice:F5}), TP: {takeProfitInPips:F1} пп ({takeProfitPrice:F5}).");
                 Print($"Открытие {OrderTradeType} по {SymbolName}...");
 
                 // --- Открытие ордера ---
@@ -158,7 +142,7 @@ namespace cAlgo.Robots
             if (tradeType == TradeType.Buy)
             {
                 // Для Buy - ищем минимум за последние N часовых свечей (уровень ликвидности ниже текущей цены)
-                int lookbackBars = Math.Min(BarsForAnalysis, hourlyBars.Count - 1);
+                int lookbackBars = hourlyBars.Count - 1;
                 double lowestLow = double.MaxValue;
                 
                 for (int i = 1; i <= lookbackBars; i++)
@@ -170,8 +154,8 @@ namespace cAlgo.Robots
                     }
                 }
                 
-                // Добавляем небольшой отступ для надежности (5 пипсов)
-                double slPrice = lowestLow - (5 * _symbol.PipSize);
+                // Добавляем отступ для надежности (10 пипсов)
+                double slPrice = lowestLow - (10 * _symbol.PipSize);
                 
                 Print($"Найден уровень ликвидности для Buy: {lowestLow}, SL установлен на: {slPrice}");
                 return slPrice;
@@ -179,7 +163,7 @@ namespace cAlgo.Robots
             else // TradeType.Sell
             {
                 // Для Sell - ищем максимум за последние N часовых свечей (уровень ликвидности выше текущей цены)
-                int lookbackBars = Math.Min(BarsForAnalysis, hourlyBars.Count - 1);
+                int lookbackBars = hourlyBars.Count - 1;
                 double highestHigh = double.MinValue;
                 
                 for (int i = 1; i <= lookbackBars; i++)
@@ -191,8 +175,8 @@ namespace cAlgo.Robots
                     }
                 }
                 
-                // Добавляем небольшой отступ для надежности (5 пипсов)
-                double slPrice = highestHigh + (5 * _symbol.PipSize);
+                // Добавляем отступ для надежности (10 пипсов)
+                double slPrice = highestHigh + (10 * _symbol.PipSize);
                 
                 Print($"Найден уровень ликвидности для Sell: {highestHigh}, SL установлен на: {slPrice}");
                 return slPrice;
@@ -203,7 +187,7 @@ namespace cAlgo.Robots
         private double? CalculateTakeProfitPrice(Bars hourlyBars, TradeType tradeType)
         {
             // Определяем количество баров для анализа фракталов
-            int bars = Math.Min(BarsForAnalysis, hourlyBars.Count - 3);
+            int bars = hourlyBars.Count - 3;
             
             if (tradeType == TradeType.Buy)
             {
