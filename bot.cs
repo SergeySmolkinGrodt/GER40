@@ -32,11 +32,6 @@ namespace cAlgo.Robots
         [Parameter("SL Lookback Period (H1 Bars)", DefaultValue = 24, MinValue = 3, MaxValue = 200)]
         public int SlLookbackPeriod { get; set; }
 
-        [Parameter("H4 Lookback Period (Bars)", DefaultValue = 50, MinValue = 10, MaxValue = 200)]
-        public int H4LookbackPeriod { get; set; }
-
-        [Parameter("H4 Fractal Lookback", DefaultValue = 5, MinValue = 3, MaxValue = 10)]
-        public int H4FractalLookback { get; set; }
 
         // --- Индикаторы ---
         private Fractals _fractals;
@@ -90,15 +85,8 @@ namespace cAlgo.Robots
             bool isTriggerTime = serverTime.Hour == TriggerHour && serverTime.Minute == TriggerMinute;
             bool tradeAlreadyOpenedToday = serverTime.Date == _lastTradeDate.Date; // Сравниваем только даты
 
-            // --- Визуальный анализ контекста ---
+            // --- Получение данных таймфрейма для основной логики ---
             var hourlyBars = MarketData.GetBars(_hourlyTimeframe, SymbolName);
-            var visualContext = AnalyzeVisualContext(hourlyBars);
-
-            if (visualContext != VisualContext.Long)
-            {
-                Print($"Визуальный контекст не лонг ({visualContext}), открытие лонга запрещено.");
-                return;
-            }
 
             if (isTriggerTime && !tradeAlreadyOpenedToday)
             {
@@ -364,22 +352,6 @@ namespace cAlgo.Robots
         {
             Print("Бот остановлен.");
         }
-        // --- Визуальный анализ: определяет контекст по последним свечам ---
-        private enum VisualContext { Long, Short, Neutral }
 
-        private VisualContext AnalyzeVisualContext(Bars bars)
-        {
-            if (bars == null || bars.Count < 3)
-                return VisualContext.Neutral;
-
-            int last = bars.Count - 1;
-            bool lastBear = bars.ClosePrices[last] < bars.OpenPrices[last];
-            bool prevBear = bars.ClosePrices[last-1] < bars.OpenPrices[last-1];
-
-            // Если две подряд медвежьи — шорт-контекст, иначе лонг-контекст
-            if (lastBear && prevBear)
-                return VisualContext.Short;
-            return VisualContext.Long;
-        }
     }
 }
