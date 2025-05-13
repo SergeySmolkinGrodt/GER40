@@ -74,9 +74,31 @@ namespace cAlgo.Robots
 
             var serverTime = Server.Time;
 
-        
+            // --- Фиксация всех позиций в конце дня ---
+            if (serverTime.Hour == 23 && serverTime.Minute >= 59)
+            {
+                foreach (var position in Positions)
+                {
+                    if (position.SymbolName == SymbolName && position.Label == TradeLabel)
+                    {
+                        ClosePosition(position);
+                        Print($"Позиция ID:{position.Id} по {SymbolName} закрыта в конце дня.");
+                    }
+                }
+            }
+
             bool isTriggerTime = serverTime.Hour == TriggerHour && serverTime.Minute == TriggerMinute;
             bool tradeAlreadyOpenedToday = serverTime.Date == _lastTradeDate.Date; // Сравниваем только даты
+
+            // --- Визуальный анализ контекста ---
+            var hourlyBars = MarketData.GetBars(_hourlyTimeframe, SymbolName);
+            var visualContext = AnalyzeVisualContext(hourlyBars);
+
+            if (visualContext != VisualContext.Long)
+            {
+                Print($"Визуальный контекст не лонг ({visualContext}), открытие лонга запрещено.");
+                return;
+            }
 
             if (isTriggerTime && !tradeAlreadyOpenedToday)
             {
@@ -84,8 +106,7 @@ namespace cAlgo.Robots
 
                 if (Account.Equity <= 0) { Print("Ошибка: Экьюти <= 0. Сделка отменена."); return; }
 
-                // Получаем данные часового таймфрейма
-                var hourlyBars = MarketData.GetBars(_hourlyTimeframe, SymbolName); // Указываем SymbolName
+                // hourlyBars уже получен выше и используется повторно
                 if (hourlyBars.Count == 0)
                 {
                     Print("Ошибка: Не удалось получить исторические данные для часового таймфрейма. Сделка отменена.");
@@ -342,6 +363,23 @@ namespace cAlgo.Robots
         protected override void OnStop()
         {
             Print("Бот остановлен.");
+        }
+        // --- Визуальный анализ: определяет контекст по последним свечам ---
+        private enum VisualContext { Long, Short, Neutral }
+
+        private VisualContext AnalyzeVisualContext(Bars bars)
+        {
+            if (bars == null || bars.Count < 3)
+                return VisualContext.Neutral;
+
+            int last = bars.Count - 1;
+            bool lastBear = bars.ClosePrices[last] < bars.OpenPrices[last];
+            bool prevBear = bars.ClosePrices[last-1] < bars.OpenPrices[last-1];
+
+            // Если две подряд медвежьи — шорт-контекст, иначе лонг-контекст
+            if (lastBear && prevBear)
+                return VisualContext.Short;
+            return VisualContext.Long;
         }
     }
 }
