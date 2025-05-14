@@ -4,12 +4,12 @@ using System.Linq;
 using cAlgo.API;
 using cAlgo.API.Internals;
 using cAlgo.API.Indicators;
-using System.Collections.Generic; // Добавлено для использования List<T>
+using System.Collections.Generic; 
 
 namespace cAlgo.Robots
 {
     [Robot(TimeZone = TimeZones.UTC, AccessRights = AccessRights.None)]
-    public class DailyAsianOpenRisk : Robot
+    public class DailyAsianOpenRiskH4 : Robot
     {
         // --- Параметры бота ---
         [Parameter("Название символа", DefaultValue = "GER40.cash")]
@@ -18,7 +18,6 @@ namespace cAlgo.Robots
         [Parameter("Процент риска от эквити (%)", DefaultValue = 1.0, MinValue = 0.1, MaxValue = 10.0, Step = 0.1)]
         public double RiskPercent { get; set; }
 
-        // Параметр OrderTradeType теперь используется как fallback или если логика структуры отключена
         [Parameter("Направление сделки (если структура не определена)", DefaultValue = TradeType.Buy)]
         public TradeType FallbackOrderTradeType { get; set; }
 
@@ -28,62 +27,48 @@ namespace cAlgo.Robots
         [Parameter("Минута открытия (Время Сервера)", DefaultValue = 0, MinValue = 0, MaxValue = 59)]
         public int TriggerMinute { get; set; }
 
-        [Parameter("Метка сделки (Label)", DefaultValue = "DailyAsianOpenRiskRR")]
+        [Parameter("Метка сделки (Label)", DefaultValue = "DailyAsianOpenRiskH4_ZZ_2R")] // Обновлена метка
         public string TradeLabel { get; set; }
 
-        [Parameter("SL Lookback Period (H1 Bars)", DefaultValue = 24, MinValue = 3, MaxValue = 200)]
+        [Parameter("SL Lookback Period (H4 Bars)", DefaultValue = 6, MinValue = 1, MaxValue = 50)]
         public int SlLookbackPeriod { get; set; }
 
-        [Parameter("Market Structure Lookback (Bars)", DefaultValue = 30, MinValue = 10, MaxValue = 100)]
-        public int MarketStructureLookbackPeriod { get; set; }
+        [Parameter("Market Structure Lookback (H4 Bars)", DefaultValue = 30, MinValue = 10, MaxValue = 100)]
+        public int MarketStructureLookbackPeriod { get; set; } // Используется для фильтрации точек ZigZag
 
-        [Parameter("Min Points for Structure", DefaultValue = 2, MinValue = 2, MaxValue = 5)]
+        [Parameter("Min Points for Structure (H4)", DefaultValue = 2, MinValue = 2, MaxValue = 5)]
         public int MinPointsForStructure { get; set; }
 
-
         // --- Индикаторы ---
-        private Fractals _fractalsH1; // Фракталы для H1 (используются для TP и могут быть для структуры)
-        private cAlgo.Indicators.ZigZag _zigZagH1;
         private cAlgo.Indicators.ZigZag _zigZagH4;
 
-        [Parameter("ZigZag Depth", DefaultValue = 12)]
+        [Parameter("ZigZag Depth (H4)", DefaultValue = 12)]
         public int ZigZagDepth { get; set; }
-        [Parameter("ZigZag Deviation", DefaultValue = 5)]
+        [Parameter("ZigZag Deviation (H4 Pips)", DefaultValue = 5)]
         public double ZigZagDeviation { get; set; }
-        [Parameter("ZigZag Backstep", DefaultValue = 3)]
+        [Parameter("ZigZag Backstep (H4)", DefaultValue = 3)] // Этот параметр не используется в текущей реализации ZigZag, но оставлен
         public int ZigZagBackstep { get; set; }
 
         // --- Внутренние переменные ---
         private DateTime _lastTradeDate;
         private Symbol _symbol;
-        private TimeFrame _hourlyTimeframe = TimeFrame.Hour; // H1
-        private TimeFrame _h4Timeframe = TimeFrame.Hour4;   // H4
+        private TimeFrame _h4Timeframe = TimeFrame.Hour4;   
 
-        // Данные по барам
-        private Bars _h1Bars;
         private Bars _h4Bars;
 
-        // Списки для хранения недавних значимых максимумов и минимумов
-        private List<double> _h1RecentHighs = new List<double>();
-        private List<double> _h1RecentLows = new List<double>();
         private List<double> _h4RecentHighs = new List<double>();
         private List<double> _h4RecentLows = new List<double>();
 
-        // Текущая определенная структура рынка
-        private MarketStructure _currentH1Structure = MarketStructure.Undetermined;
         private MarketStructure _currentH4Structure = MarketStructure.Undetermined;
 
-        // Время последнего обновления структуры
-        private DateTime _lastH1BarTime = DateTime.MinValue;
         private DateTime _lastH4BarTime = DateTime.MinValue;
 
-        // Enum для представления рыночной структуры
         public enum MarketStructure
         {
-            Bullish,    // Бычья
-            Bearish,    // Медвежья
-            Sideways,   // Боковая
-            Undetermined // Неопределенная
+            Bullish,    
+            Bearish,    
+            Sideways,   
+            Undetermined 
         }
 
 
@@ -97,31 +82,22 @@ namespace cAlgo.Robots
                 return;
             }
 
-            // Инициализация данных по таймфреймам H1 и H4
-            _h1Bars = MarketData.GetBars(_hourlyTimeframe, SymbolName);
             _h4Bars = MarketData.GetBars(_h4Timeframe, SymbolName);
-
-            // Инициализация индикатора фракталов для часового таймфрейма
-            _fractalsH1 = Indicators.Fractals(_h1Bars, 5);
-
-            // Инициализация ZigZag для H1 и H4
-            _zigZagH1 = new cAlgo.Indicators.ZigZag(_h1Bars, ZigZagDepth, ZigZagDeviation, ZigZagBackstep);
-            _zigZagH4 = new cAlgo.Indicators.ZigZag(_h4Bars, ZigZagDepth, ZigZagDeviation, ZigZagBackstep);
+            _zigZagH4 = new cAlgo.Indicators.ZigZag(_h4Bars, _symbol, ZigZagDepth, ZigZagDeviation, ZigZagBackstep);
 
             _lastTradeDate = DateTime.MinValue;
 
             // Первоначальное определение структуры
-            if (_h1Bars.Count > MarketStructureLookbackPeriod)
+            // Убедимся, что достаточно баров для MarketStructureLookbackPeriod перед вызовом UpdateRecentHighsLows
+            if (_h4Bars.Count > MarketStructureLookbackPeriod) 
             {
-                UpdateRecentHighsLows(_h1Bars, _h1RecentHighs, _h1RecentLows, MarketStructureLookbackPeriod, MinPointsForStructure +1); // +1 для сравнения n-1 и n-2
-                _currentH1Structure = DetermineMarketStructureLogic(_h1RecentHighs, _h1RecentLows, _h1Bars, "H1");
-                Print($"Начальная структура H1: {_currentH1Structure}. Highs: {string.Join(", ", _h1RecentHighs.Select(h => h.ToString("F5")))}, Lows: {string.Join(", ", _h1RecentLows.Select(l => l.ToString("F5")))}");
-            }
-            if (_h4Bars.Count > MarketStructureLookbackPeriod)
-            {
-                UpdateRecentHighsLows(_h4Bars, _h4RecentHighs, _h4RecentLows, MarketStructureLookbackPeriod, MinPointsForStructure +1);
+                UpdateRecentHighsLows(_h4Bars, _h4RecentHighs, _h4RecentLows, MarketStructureLookbackPeriod, MinPointsForStructure + 1);
                 _currentH4Structure = DetermineMarketStructureLogic(_h4RecentHighs, _h4RecentLows, _h4Bars, "H4");
-                Print($"Начальная структура H4: {_currentH4Structure}. Highs: {string.Join(", ", _h4RecentHighs.Select(h => h.ToString("F5")))}, Lows: {string.Join(", ", _h4RecentLows.Select(l => l.ToString("F5")))}");
+                Print($"Начальная структура H4 (по ZigZag): {_currentH4Structure}. Highs: {string.Join(", ", _h4RecentHighs.Select(h => h.ToString("F5")))}, Lows: {string.Join(", ", _h4RecentLows.Select(l => l.ToString("F5")))}");
+            }
+            else
+            {
+                Print($"Недостаточно баров ({_h4Bars.Count}) для начального определения структуры с периодом {MarketStructureLookbackPeriod}.");
             }
         }
 
@@ -131,37 +107,24 @@ namespace cAlgo.Robots
 
             var serverTime = Server.Time;
 
-            // Обновляем данные баров (лучше делать это здесь, чтобы всегда иметь актуальные)
-            _h1Bars = MarketData.GetBars(_hourlyTimeframe, SymbolName);
             _h4Bars = MarketData.GetBars(_h4Timeframe, SymbolName);
-            _fractalsH1 = Indicators.Fractals(_h1Bars, 5); // Обновляем фракталы H1
-            _zigZagH1 = new cAlgo.Indicators.ZigZag(_h1Bars, ZigZagDepth, ZigZagDeviation, ZigZagBackstep);
-            _zigZagH4 = new cAlgo.Indicators.ZigZag(_h4Bars, ZigZagDepth, ZigZagDeviation, ZigZagBackstep);
-
-            // --- Обновление анализа структуры при открытии нового бара ---
-            if (_h1Bars.Count > 0 && _h1Bars.OpenTimes.Last() != _lastH1BarTime)
-            {
-                _lastH1BarTime = _h1Bars.OpenTimes.Last();
-                if (_h1Bars.Count > MarketStructureLookbackPeriod)
-                {
-                    UpdateRecentHighsLows(_h1Bars, _h1RecentHighs, _h1RecentLows, MarketStructureLookbackPeriod, MinPointsForStructure +1);
-                    _currentH1Structure = DetermineMarketStructureLogic(_h1RecentHighs, _h1RecentLows, _h1Bars, "H1");
-                    Print($"Обновлена структура H1: {_currentH1Structure} в {serverTime}. Highs: {string.Join(", ", _h1RecentHighs.Select(h => h.ToString("F5")))}, Lows: {string.Join(", ", _h1RecentLows.Select(l => l.ToString("F5")))}");
-                }
-            }
+            // Каждый тик создается новый экземпляр ZigZag, что может быть ресурсоемко.
+            // Рассмотрите возможность обновления ZigZag без пересоздания, если его реализация это позволяет.
+            // В данной реализации ZigZag.CalculateAll() вызывается в конструкторе.
+            _zigZagH4 = new cAlgo.Indicators.ZigZag(_h4Bars, _symbol, ZigZagDepth, ZigZagDeviation, ZigZagBackstep); 
 
             if (_h4Bars.Count > 0 && _h4Bars.OpenTimes.Last() != _lastH4BarTime)
             {
                 _lastH4BarTime = _h4Bars.OpenTimes.Last();
-                 if (_h4Bars.Count > MarketStructureLookbackPeriod)
+                 if (_h4Bars.Count > MarketStructureLookbackPeriod) // Убедимся, что достаточно баров
                 {
-                    UpdateRecentHighsLows(_h4Bars, _h4RecentHighs, _h4RecentLows, MarketStructureLookbackPeriod, MinPointsForStructure +1);
+                    UpdateRecentHighsLows(_h4Bars, _h4RecentHighs, _h4RecentLows, MarketStructureLookbackPeriod, MinPointsForStructure + 1);
                     _currentH4Structure = DetermineMarketStructureLogic(_h4RecentHighs, _h4RecentLows, _h4Bars, "H4");
-                    Print($"Обновлена структура H4: {_currentH4Structure} в {serverTime}. Highs: {string.Join(", ", _h4RecentHighs.Select(h => h.ToString("F5")))}, Lows: {string.Join(", ", _h4RecentLows.Select(l => l.ToString("F5")))}");
+                    Print($"Обновлена структура H4 (по ZigZag): {_currentH4Structure} в {serverTime}. Highs: {string.Join(", ", _h4RecentHighs.Select(h => h.ToString("F5")))}, Lows: {string.Join(", ", _h4RecentLows.Select(l => l.ToString("F5")))}");
                 }
             }
 
-            // --- Фиксация всех позиций в конце дня ---
+            // --- Логика закрытия позиций и открытия новых сделок (остается без изменений) ---
             if (serverTime.Hour == 23 && serverTime.Minute >= 59)
             {
                 foreach (var position in Positions)
@@ -182,51 +145,65 @@ namespace cAlgo.Robots
                 _lastTradeDate = serverTime.Date;
 
                 if (Account.Equity <= 0) { Print("Ошибка: Экьюти <= 0. Сделка отменена."); return; }
-                if (_h1Bars.Count == 0) // Используем _h1Bars, так как они обновляются в OnTick
+                if (_h4Bars.Count == 0) 
                 {
-                    Print("Ошибка: Не удалось получить исторические данные для часового таймфрейма. Сделка отменена.");
+                    Print("Ошибка: Не удалось получить исторические данные для таймфрейма H4. Сделка отменена.");
                     return;
                 }
-
-                // --- Принятие решения на основе структуры ---
-                // Бот должен открывать длинные позиции, когда структура бычья.
-                // Используем логику: H4 бычья И (H1 бычья ИЛИ H1 не медвежья)
-                // ИЛИ H1 бычья И (H4 бычья ИЛИ H4 не медвежья)
-                bool isH4Supportive = _currentH4Structure == MarketStructure.Bullish || _currentH4Structure == MarketStructure.Sideways || _currentH4Structure == MarketStructure.Undetermined;
-                bool isH1Supportive = _currentH1Structure == MarketStructure.Bullish || _currentH1Structure == MarketStructure.Sideways || _currentH1Structure == MarketStructure.Undetermined;
-
-                bool canOpenLong = (_currentH4Structure == MarketStructure.Bullish && isH1Supportive) ||
-                                   (_currentH1Structure == MarketStructure.Bullish && isH4Supportive);
-
-
-                if (!canOpenLong)
+                if (_currentH4Structure == MarketStructure.Undetermined && (_h4RecentHighs.Count == 0 || _h4RecentLows.Count == 0) )
                 {
-                    Print($"Условие для Long не выполнено в {serverTime}. H4: {_currentH4Structure}, H1: {_currentH1Structure}. Сделка не открывается.");
-                    return;
+                    Print($"Структура H4 не определена или отсутствуют точки ZigZag для анализа в {serverTime}. Попытка обновить структуру.");
+                     if (_h4Bars.Count > MarketStructureLookbackPeriod)
+                    {
+                        UpdateRecentHighsLows(_h4Bars, _h4RecentHighs, _h4RecentLows, MarketStructureLookbackPeriod, MinPointsForStructure + 1);
+                        _currentH4Structure = DetermineMarketStructureLogic(_h4RecentHighs, _h4RecentLows, _h4Bars, "H4");
+                        Print($"Повторное обновление структуры H4 (по ZigZag): {_currentH4Structure}. Highs: {string.Join(", ", _h4RecentHighs.Select(h => h.ToString("F5")))}, Lows: {string.Join(", ", _h4RecentLows.Select(l => l.ToString("F5")))}");
+                    }
+                    if (_currentH4Structure == MarketStructure.Undetermined)
+                    {
+                         Print($"Структура H4 все еще не определена в {serverTime}. Сделка не открывается.");
+                         return;
+                    }
                 }
 
-                Print($"Условие для Long выполнено в {serverTime}. H4: {_currentH4Structure}, H1: {_currentH1Structure}. Попытка открытия Long.");
-                TradeType currentTradeType = TradeType.Buy; // Открываем только Long согласно условию
 
-                // --- Расчет уровней SL и TP ---
-                double? stopLossPrice = CalculateStopLossPrice(_h1Bars, currentTradeType);
+                bool canOpenLong = _currentH4Structure == MarketStructure.Bullish;
+                bool canOpenShort = _currentH4Structure == MarketStructure.Bearish;
+                
+                TradeType currentTradeType = FallbackOrderTradeType; 
+                bool shouldOpenTrade = false;
+
+                if (canOpenLong)
+                {
+                    Print($"Условие для Long выполнено в {serverTime}. H4 структура (ZigZag): {_currentH4Structure}. Попытка открытия Long.");
+                    currentTradeType = TradeType.Buy;
+                    shouldOpenTrade = true;
+                }
+                else if (canOpenShort)
+                {
+                    Print($"Условие для Short выполнено в {serverTime}. H4 структура (ZigZag): {_currentH4Structure}. Попытка открытия Short.");
+                    currentTradeType = TradeType.Sell;
+                    shouldOpenTrade = true;
+                }
+                else
+                {
+                    Print($"Условия для Long или Short на H4 (ZigZag) не выполнены в {serverTime}. H4 структура: {_currentH4Structure}. Сделка не открывается.");
+                    return; 
+                }
+
+                if (!shouldOpenTrade)
+                {
+                    return;
+                }
+                
+                double? stopLossPrice = CalculateStopLossPrice(_h4Bars, currentTradeType); 
                 if (!stopLossPrice.HasValue)
                 {
-                    // Сообщение об ошибке уже выводится внутри CalculateStopLossPrice
-                    return;
-                }
-
-                double? takeProfitPrice = CalculateTakeProfitPrice(_h1Bars, currentTradeType);
-                if (!takeProfitPrice.HasValue)
-                {
-                    Print("Ошибка: Не удалось определить уровень для Take Profit. Сделка отменена.");
-                    return;
+                    return; 
                 }
 
                 double entryPrice = (currentTradeType == TradeType.Buy) ? _symbol.Ask : _symbol.Bid;
-
                 double stopLossInPips = Math.Abs((entryPrice - stopLossPrice.Value) / _symbol.PipSize);
-                double takeProfitInPips = Math.Abs((takeProfitPrice.Value - entryPrice) / _symbol.PipSize);
 
                 if (stopLossInPips <= 0)
                 {
@@ -234,7 +211,24 @@ namespace cAlgo.Robots
                     return;
                 }
 
-                // --- Расчет объема ---
+                double takeProfitInPips = stopLossInPips * 2.0;
+                double? takeProfitPrice;
+
+                if (currentTradeType == TradeType.Buy)
+                {
+                    takeProfitPrice = entryPrice + (takeProfitInPips * _symbol.PipSize);
+                }
+                else 
+                {
+                    takeProfitPrice = entryPrice - (takeProfitInPips * _symbol.PipSize);
+                }
+
+                if (!takeProfitPrice.HasValue || takeProfitInPips <=0) 
+                {
+                    Print($"Ошибка: Не удалось рассчитать Take Profit (TP pips: {takeProfitInPips:F1}, TP price: {takeProfitPrice}). Сделка отменена.");
+                    return;
+                }
+                
                 double riskAmount = Account.Equity * (RiskPercent / 100.0);
                 double pipValuePerLot = 0;
                 if (_symbol.TickSize > 0 && _symbol.PipSize > 0)
@@ -269,10 +263,9 @@ namespace cAlgo.Robots
                 Print($"Время сделки ({serverTime}). Риск: {RiskPercent}%, Экьюти: {Account.Equity:F2} {Account.Asset.Name}, Сумма риска: {riskAmount:F2} {Account.Asset.Name}.");
                 Print($"Расчетный объем: {finalVolumeInLots:F5} лот ({normalizedVolumeInUnits} юнитов).");
                 Print($"Цена входа (приблизительно): {entryPrice:F5}");
-                Print($"SL: {stopLossInPips:F1} пп ({stopLossPrice.Value:F5}), TP: {takeProfitInPips:F1} пп ({takeProfitPrice.Value:F5}).");
-                Print($"Открытие {currentTradeType} по {SymbolName}...");
+                Print($"SL: {stopLossInPips:F1} пп ({stopLossPrice.Value:F5}), TP (2R): {takeProfitInPips:F1} пп ({takeProfitPrice.Value:F5}).");
+                Print($"Открытие {currentTradeType} по {SymbolName} на H4 (структура по ZigZag)...");
 
-                // --- Открытие ордера ---
                 try
                 {
                     var tradeResult = ExecuteMarketOrder(currentTradeType, _symbol.Name, normalizedVolumeInUnits, TradeLabel, stopLossPrice, takeProfitPrice);
@@ -294,148 +287,183 @@ namespace cAlgo.Robots
             }
         }
 
-        // Метод для обновления списков недавних значимых Highs и Lows
-        // lookbackPeriod - количество баров для анализа фракталов
-        // maxPointsToStore - максимальное количество последних Highs/Lows для хранения
+        // Метод для обновления списков недавних значимых Highs и Lows с использованием ZigZag
+        // lookbackPeriod - количество баров H4 для анализа (фильтрация точек ZigZag)
+        // maxPointsToStore - максимальное количество последних Highs/Lows для хранения (для DetermineMarketStructureLogic)
         private void UpdateRecentHighsLows(Bars bars, List<double> recentHighs, List<double> recentLows, int lookbackPeriod, int maxPointsToStore)
         {
             recentHighs.Clear();
             recentLows.Clear();
 
-            // Фракталу нужно минимум 5 баров (2 слева, 1 центр, 2 справа).
-            // Для анализа `lookbackPeriod` баров, нам нужно `lookbackPeriod + 2` баров, чтобы последний фрактал мог сформироваться.
-            if (bars.Count < Math.Max(5, lookbackPeriod + 2) ) 
+            if (_zigZagH4 == null || _zigZagH4.ZigZagPoints.Count < 2)
             {
-                //Print($"Недостаточно баров ({bars.Count}) на {bars.TimeFrame} для определения Highs/Lows с lookback {lookbackPeriod}. Требуется {Math.Max(5, lookbackPeriod + 2)}.");
+                Print($"UpdateRecentHighsLows: Недостаточно точек ZigZag ({_zigZagH4?.ZigZagPoints?.Count ?? 0}) для анализа.");
                 return;
             }
 
-            Fractals localFractals = Indicators.Fractals(bars, 3);
+            var allZigZagPoints = _zigZagH4.ZigZagPoints;
+            
+            // Фильтруем точки ZigZag, чтобы они попадали в заданный lookbackPeriod
+            // Точка ZigZag (Tuple<int, double>) - Item1 это индекс бара
+            int firstBarIndexInLookback = Math.Max(0, bars.Count - lookbackPeriod);
+            var relevantZigZagPoints = allZigZagPoints.Where(p => p.Item1 >= firstBarIndexInLookback).ToList();
 
-            // Идем по барам в обратном порядке, чтобы найти последние фракталы
-            // Фрактал на баре `i` подтверждается, когда бар `i+2` закрылся.
-            // Поэтому самый "свежий" фрактал, который мы можем рассматривать, находится на `bars.Count - 1 - 2 = bars.Count - 3`.
-            for (int i = bars.Count - 3; i >= Math.Max(0, bars.Count - 1 - lookbackPeriod - 2) ; i--)
+            if (relevantZigZagPoints.Count < 2)
             {
-                if (recentHighs.Count < maxPointsToStore && !double.IsNaN(localFractals.UpFractal[i]))
-                {
-                    // Добавляем, только если это новый High (отличается от последнего добавленного)
-                    // или если список пуст. Это помогает избежать дублирования одинаковых фрактальных уровней подряд.
-                    if (recentHighs.Count == 0 || Math.Abs(localFractals.UpFractal[i] - recentHighs.First()) > _symbol.PipSize * 0.1) // Небольшой допуск
-                    {
-                         recentHighs.Insert(0, localFractals.UpFractal[i]); // Добавляем в начало списка (самый свежий первым)
-                    }
-                }
-                if (recentLows.Count < maxPointsToStore && !double.IsNaN(localFractals.DownFractal[i]))
-                {
-                    if (recentLows.Count == 0 || Math.Abs(localFractals.DownFractal[i] - recentLows.First()) > _symbol.PipSize * 0.1)
-                    {
-                        recentLows.Insert(0, localFractals.DownFractal[i]); // Добавляем в начало списка
-                    }
-                }
-                
-                if (recentHighs.Count >= maxPointsToStore && recentLows.Count >= maxPointsToStore) break;
+                Print($"UpdateRecentHighsLows: Недостаточно точек ZigZag ({relevantZigZagPoints.Count}) в пределах периода {lookbackPeriod} баров (начиная с индекса {firstBarIndexInLookback}). Всего точек ZigZag: {allZigZagPoints.Count}.");
+                return;
             }
-            // Print($"Для {bars.TimeFrame} найдено: {recentHighs.Count} Highs, {recentLows.Count} Lows.");
+
+            // Определяем, является ли последняя точка ZigZag максимумом или минимумом относительно предпоследней
+            // Это предполагает, что точки ZigZag чередуются
+            bool lastRelevantPointIsHigh = relevantZigZagPoints.Last().Item2 > relevantZigZagPoints[relevantZigZagPoints.Count - 2].Item2;
+            
+            // Если последние две точки равны (маловероятно с Deviation > 0, но возможно), пытаемся определить по предыдущим
+            if (relevantZigZagPoints.Last().Item2 == relevantZigZagPoints[relevantZigZagPoints.Count - 2].Item2 && relevantZigZagPoints.Count >=3)
+            {
+                 lastRelevantPointIsHigh = relevantZigZagPoints[relevantZigZagPoints.Count - 2].Item2 > relevantZigZagPoints[relevantZigZagPoints.Count - 3].Item2;
+            }
+
+
+            // Заполняем списки recentHighs и recentLows, двигаясь от новых точек к старым
+            for (int i = relevantZigZagPoints.Count - 1; i >= 0; i--)
+            {
+                double currentPointValue = relevantZigZagPoints[i].Item2;
+                bool isCurrentPointHighType;
+
+                // Определяем тип текущей точки (High или Low) на основе ее чередования от последней точки
+                if ((relevantZigZagPoints.Count - 1 - i) % 2 == 0) // последняя, третья с конца и т.д.
+                {
+                    isCurrentPointHighType = lastRelevantPointIsHigh;
+                }
+                else // вторая с конца, четвертая с конца и т.д.
+                {
+                    isCurrentPointHighType = !lastRelevantPointIsHigh;
+                }
+
+                if (isCurrentPointHighType)
+                {
+                    if (recentHighs.Count < maxPointsToStore)
+                    {
+                        if (recentHighs.Count == 0 || Math.Abs(currentPointValue - recentHighs.First()) > _symbol.PipSize * 0.01) // Проверка на почти дубликат
+                           recentHighs.Insert(0, currentPointValue); // Вставляем в начало, чтобы сохранить порядок от старых к новым после Reverse()
+                    }
+                }
+                else
+                {
+                    if (recentLows.Count < maxPointsToStore)
+                    {
+                         if (recentLows.Count == 0 || Math.Abs(currentPointValue - recentLows.First()) > _symbol.PipSize * 0.01)
+                            recentLows.Insert(0, currentPointValue);
+                    }
+                }
+
+                if (recentHighs.Count >= maxPointsToStore && recentLows.Count >= maxPointsToStore)
+                    break; 
+            }
+            
+            // DetermineMarketStructureLogic ожидает списки, отсортированные от старых к новым
+            // Так как мы вставляли в начало (Insert(0,...)), списки уже отсортированы от старых к новым, если мы итерировали от старых ZigZag точек.
+            // Но мы итерировали от НОВЫХ ZigZag точек к СТАРЫМ и вставляли в НАЧАЛО списка.
+            // Пример: ZZ = [z1,z2,z3,z4 (newest)]. Iteration: z4, z3, z2, z1.
+            // highs.Insert(0, z4_val), highs.Insert(0, z2_val) -> highs = [z2_val, z4_val] (старый, новый) - это то что нужно.
+
+            // Print($"UpdateRecentHighsLows (ZigZag): Собрано Highs: {recentHighs.Count}, Lows: {recentLows.Count}");
         }
 
-        // Метод для определения рыночной структуры
+
+        // Метод для определения рыночной структуры (остается без изменений, т.к. работает с готовыми списками Highs/Lows)
         private MarketStructure DetermineMarketStructureLogic(List<double> highs, List<double> lows, Bars relevantBars, string tfName)
         {
-            // Требуется MinPointsForStructure (например, 2) Highs и Lows для определения структуры.
-            // Списки хранят MinPointsForStructure+1 элементов, чтобы можно было сравнить [n-1] с [n-2]
             if (highs.Count < MinPointsForStructure || lows.Count < MinPointsForStructure)
             {
-                //Print($"{tfName} - Недостаточно данных для определения структуры (нужно минимум {MinPointsForStructure} High и {MinPointsForStructure} Low). Найдено H:{highs.Count}, L:{lows.Count}");
+                // Print($"{tfName} - Недостаточно данных для определения структуры (нужно минимум {MinPointsForStructure} High и {MinPointsForStructure} Low). Найдено H:{highs.Count}, L:{lows.Count}");
                 return MarketStructure.Undetermined;
             }
 
-            // Берем последние MinPointsForStructure точек. Списки упорядочены от старых к новым.
-            // lastHigh/Low - самый свежий, prevHigh/Low - перед ним.
-            double lastHigh = highs[highs.Count - 1];
-            double prevHigh = highs[highs.Count - MinPointsForStructure]; // highs[highs.Count - 2] if MinPointsForStructure is 2
-            double lastLow = lows[lows.Count - 1];
-            double prevLow = lows[lows.Count - MinPointsForStructure];   // lows[lows.Count - 2] if MinPointsForStructure is 2
-
-            // Проверка на последовательность для бычьего тренда (HH и HL)
             bool isConsistentlyHigherHighs = true;
             bool isConsistentlyHigherLows = true;
-            for (int i = 1; i < MinPointsForStructure; i++)
+            // Списки УЖЕ отсортированы от старых к новым благодаря Insert(0,...) при обходе ZigZag от новых к старым.
+            // highs[0] - самый старый, highs[highs.Count-1] - самый новый.
+            for (int i = 1; i < MinPointsForStructure; i++) // Сравниваем highs[i] с highs[i-1]
             {
+                // Для бычьего тренда: High[i] > High[i-1] (последовательно повышающиеся максимумы)
+                // highs.Count-i - новый, highs.Count-i-1 - старый перед ним.
+                // Если MinPointsForStructure = 2, мы сравниваем последний High (index Count-1) с предпоследним (index Count-2)
+                // И также второй с конца (Count-2) с третьим с конца (Count-3), если MinPointsForStructure = 3
+                // Логика должна быть: highs[k] > highs[k-1] для k от 1 до highs.Count-1
+                // Переписываем для ясности, используя последние MinPointsForStructure точек
+                // highs[highs.Count - 1] vs highs[highs.Count - 2]
+                // highs[highs.Count - 2] vs highs[highs.Count - 3] ...
                 if (highs[highs.Count - i] <= highs[highs.Count - i - 1]) isConsistentlyHigherHighs = false;
                 if (lows[lows.Count - i] <= lows[lows.Count - i - 1]) isConsistentlyHigherLows = false;
             }
 
+
             if (isConsistentlyHigherHighs && isConsistentlyHigherLows)
             {
-                //Print($"{tfName} - Бычья структура: последовательные HH и HL.");
                 return MarketStructure.Bullish;
             }
 
-            // Проверка на последовательность для медвежьего тренда (LH и LL)
             bool isConsistentlyLowerHighs = true;
             bool isConsistentlyLowerLows = true;
             for (int i = 1; i < MinPointsForStructure; i++)
             {
+                // Для медвежьего тренда: High[i] < High[i-1]
                 if (highs[highs.Count - i] >= highs[highs.Count - i - 1]) isConsistentlyLowerHighs = false;
                 if (lows[lows.Count - i] >= lows[lows.Count - i - 1]) isConsistentlyLowerLows = false;
             }
 
             if (isConsistentlyLowerHighs && isConsistentlyLowerLows)
             {
-                //Print($"{tfName} - Медвежья структура: последовательные LH и LL.");
                 return MarketStructure.Bearish;
             }
             
-            // Слом структуры: если был предыдущий HL, и цена его пробила
-            // Это более сложная логика, требующая идентификации "значимого" HL.
-            // Пока упрощенный вариант: если последний Low ниже предыдущего Low, а последний High не смог стать HH
-            if (lows.Count >= 2 && highs.Count >= 2) { // Нужны хотя бы две точки для сравнения
-                 double currentPrice = relevantBars.ClosePrices.Last();
-                 // Ищем последний значимый HL. Это Low[n-2], если Low[n-1] его пробил.
-                 // И при этом High[n-1] не смог обновить High[n-2] (т.е. не было HH перед пробоем HL)
-                 if (lows[lows.Count -1] < lows[lows.Count -2] && // LL (пробой предыдущего Low)
-                     highs[highs.Count -1] < highs[highs.Count -2]) // LH (не смогли сделать HH)
+            // Проверка на слом структуры (упрощенная)
+            if (lows.Count >= 2 && highs.Count >= 2) { 
+                 // Медвежий слом: последний Low ниже предпоследнего Low, И последний High ниже предпоследнего High (LL и LH)
+                 if (lows[lows.Count -1] < lows[lows.Count -2] && 
+                     highs[highs.Count -1] < highs[highs.Count -2]) 
                  {
-                    //Print($"{tfName} - Медвежья структура: слом предыдущего HL (LL: {lows[lows.Count -1]:F5} < {lows[lows.Count -2]:F5}) при LH ({highs[highs.Count -1]:F5} < {highs[highs.Count -2]:F5}).");
                     return MarketStructure.Bearish;
+                 }
+                 // Бычий слом: последний High выше предпоследнего High, И последний Low выше предпоследнего Low (HH и HL)
+                 // Это уже покрывается isConsistentlyHigherHighs && isConsistentlyHigherLows, но можно оставить для явности
+                 if (highs[highs.Count -1] > highs[highs.Count -2] &&
+                     lows[lows.Count -1] > lows[lows.Count -2]) 
+                 {
+                    return MarketStructure.Bullish;
                  }
             }
 
-
-            //Print($"{tfName} - Структура боковая или не определена.");
-            return MarketStructure.Sideways; // Если ни бычья, ни медвежья - считаем боковой/неопределенной
+            // Print($"{tfName} - Структура боковая или не определена после проверок.");
+            return MarketStructure.Sideways; 
         }
 
-
-        // Метод для определения цены Stop Loss на основе уровня ликвидности
-        private double? CalculateStopLossPrice(Bars bars, TradeType tradeType)
+        // Метод CalculateStopLossPrice (остается без изменений)
+        private double? CalculateStopLossPrice(Bars bars, TradeType tradeType) 
         {
-            int actualLookbackBars = SlLookbackPeriod;
+            int actualLookbackBars = SlLookbackPeriod; 
             if (bars.Count < actualLookbackBars)
             {
-                Print($"Недостаточно баров ({bars.Count}) для расчета SL с периодом {actualLookbackBars}. Требуется {actualLookbackBars}. Сделка отменена.");
+                Print($"Недостаточно баров H4 ({bars.Count}) для расчета SL с периодом {actualLookbackBars}. Требуется {actualLookbackBars}. Сделка отменена.");
                 return null;
             }
 
             if (tradeType == TradeType.Buy)
             {
                 double lowestLow = double.MaxValue;
-                for (int i = 1; i <= actualLookbackBars; i++) // Смотрим на последние actualLookbackBars, включая текущий незавершенный (индекс Count-1) до Count-actualLookbackBars
+                for (int i = 1; i <= actualLookbackBars; i++) 
                 {
-                    // Индекс бара: bars.Count - i. Самый свежий полный бар это bars.Count - 2.
-                    // Если i=1, это bars.LowPrices[bars.Count - 1] (текущий, если он есть)
-                    // Если i=actualLookbackBars, это bars.LowPrices[bars.Count - actualLookbackBars]
-                    if (bars.Count -i < 0) break; // Предохранитель
+                    if (bars.Count -i < 0) break; 
                     double currentLow = bars.LowPrices[bars.Count - i];
                     if (currentLow < lowestLow) lowestLow = currentLow;
                 }
-                if (lowestLow == double.MaxValue) { Print("Ошибка: Не удалось найти lowestLow для SL. Сделка отменена."); return null; }
-                double slPrice = lowestLow - (10 * _symbol.PipSize); // Отступ в 10 пипсов
-                //Print($"Найден уровень ликвидности для Buy (за последние {actualLookbackBars} H1 баров): {lowestLow:F5}, SL установлен на: {slPrice:F5}");
+                if (lowestLow == double.MaxValue) { Print("Ошибка: Не удалось найти lowestLow для SL на H4. Сделка отменена."); return null; }
+                double slPrice = lowestLow - (10 * _symbol.PipSize); 
                 return slPrice;
             }
-            else // TradeType.Sell
+            else 
             {
                 double highestHigh = double.MinValue;
                 for (int i = 1; i <= actualLookbackBars; i++)
@@ -444,77 +472,12 @@ namespace cAlgo.Robots
                     double currentHigh = bars.HighPrices[bars.Count - i];
                     if (currentHigh > highestHigh) highestHigh = currentHigh;
                 }
-                if (highestHigh == double.MinValue) { Print("Ошибка: Не удалось найти highestHigh для SL. Сделка отменена."); return null; }
+                if (highestHigh == double.MinValue) { Print("Ошибка: Не удалось найти highestHigh для SL на H4. Сделка отменена."); return null; }
                 double slPrice = highestHigh + (10 * _symbol.PipSize);
-                //Print($"Найден уровень ликвидности для Sell (за последние {actualLookbackBars} H1 баров): {highestHigh:F5}, SL установлен на: {slPrice:F5}");
                 return slPrice;
             }
         }
 
-        // Метод для определения цены Take Profit на основе часового фрактала
-        private double? CalculateTakeProfitPrice(Bars bars, TradeType tradeType)
-        {
-            // _fractalsH1 уже обновлен в OnTick
-            int barsToAnalyze = bars.Count;
-            if (barsToAnalyze < 5) // Минимальное количество баров для формирования фрактала
-            {
-                Print("Недостаточно баров для расчета TP на основе фракталов H1. Используется fallback.");
-                double fallbackOffset = 50 * _symbol.PipSize;
-                if (tradeType == TradeType.Buy) return _symbol.Ask + fallbackOffset;
-                else return _symbol.Bid - fallbackOffset;
-            }
-
-            double currentEntryPrice = (tradeType == TradeType.Buy) ? _symbol.Ask : _symbol.Bid;
-
-            if (tradeType == TradeType.Buy)
-            {
-                // Ищем последний (самый свежий) верхний фрактал ВЫШЕ текущей цены входа
-                // Фрактал формируется на баре i, если High[i] > High[i-1], High[i] > High[i-2], High[i] > High[i+1], High[i] > High[i+2]
-                // Индикатор Fractals.UpFractal[index] вернет значение High[index] если на index есть верхний фрактал, иначе NaN.
-                // Мы ищем фрактал, который уже сформировался, поэтому смотрим на бары до `barsToAnalyze - 3` (включительно)
-                for (int i = barsToAnalyze - 3; i >= 2; i--) // Идем от более новых баров к старым
-                {
-                    if (!double.IsNaN(_fractalsH1.UpFractal[i]))
-                    {
-                        double fractalPrice = _fractalsH1.UpFractal[i];
-                        if (fractalPrice > currentEntryPrice) // Фрактал должен быть выше текущей цены входа
-                        {
-                            //Print($"Найден верхний фрактал для Buy TP: {fractalPrice:F5} на баре H1 (время {bars.OpenTimes[i]})");
-                            return fractalPrice; // Используем первый же подходящий (самый свежий из тех, что выше входа)
-                        }
-                    }
-                }
-                // Если фрактал выше текущей цены не найден, используем максимум за N баров + отступ
-                int fallbackLookback = Math.Min(24, barsToAnalyze -1);
-                if (fallbackLookback <=0) fallbackLookback = 1;
-                double highestHighRecent = bars.HighPrices.Skip(Math.Max(0,bars.Count - fallbackLookback)).DefaultIfEmpty(_symbol.Ask).Max();
-                double tpPrice = highestHighRecent + (20 * _symbol.PipSize);
-                Print($"Верхний фрактал выше текущей цены для Buy TP не найден. Используем максимум за {fallbackLookback} H1 баров + отступ: {tpPrice:F5}");
-                return tpPrice;
-            }
-            else // TradeType.Sell
-            {
-                // Ищем последний (самый свежий) нижний фрактал НИЖЕ текущей цены входа
-                for (int i = barsToAnalyze - 3; i >= 2; i--)
-                {
-                    if (!double.IsNaN(_fractalsH1.DownFractal[i]))
-                    {
-                        double fractalPrice = _fractalsH1.DownFractal[i];
-                        if (fractalPrice < currentEntryPrice) // Фрактал должен быть ниже текущей цены входа
-                        {
-                            //Print($"Найден нижний фрактал для Sell TP: {fractalPrice:F5} на баре H1 (время {bars.OpenTimes[i]})");
-                            return fractalPrice;
-                        }
-                    }
-                }
-                int fallbackLookback = Math.Min(24, barsToAnalyze -1);
-                if (fallbackLookback <=0) fallbackLookback = 1;
-                double lowestLowRecent = bars.LowPrices.Skip(Math.Max(0,bars.Count - fallbackLookback)).DefaultIfEmpty(_symbol.Bid).Min();
-                double tpPrice = lowestLowRecent - (20 * _symbol.PipSize);
-                Print($"Нижний фрактал ниже текущей цены для Sell TP не найден. Используем минимум за {fallbackLookback} H1 баров - отступ: {tpPrice:F5}");
-                return tpPrice;
-            }
-        }
 
         protected override void OnStop()
         {
@@ -523,61 +486,194 @@ namespace cAlgo.Robots
     }
 }
 
-// --- Реализация ZigZag как обычного класса (без атрибута [Indicator]) ---
+// --- Реализация ZigZag (остается без изменений) ---
 namespace cAlgo.Indicators
 {
-    public class ZigZag
+    public class ZigZag 
     {
         public int Depth { get; set; }
-        public double Deviation { get; set; }
-        public int Backstep { get; set; }
+        public double DeviationInPips { get; set; } 
+        public int Backstep { get; set; } // Не используется в текущей логике CalculateAll, но параметр оставлен
         public double[] ZigZagBuffer { get; private set; }
+        public List<Tuple<int, double>> ZigZagPoints { get; private set; } 
 
-        private int _lastHigh;
-        private int _lastLow;
         private Bars _bars;
+        private Symbol _symbol; 
+        private double _pipSizeValue;
 
-        public ZigZag(Bars bars, int depth, double deviation, int backstep)
+        public ZigZag(Bars bars, Symbol symbol, int depth, double deviationInPips, int backstep) 
         {
             _bars = bars;
+            _symbol = symbol; 
             Depth = depth;
-            Deviation = deviation;
-            Backstep = backstep;
+            DeviationInPips = deviationInPips; 
+            Backstep = backstep; 
+            _pipSizeValue = _symbol.PipSize; 
+
             ZigZagBuffer = new double[bars.Count];
-            _lastHigh = -1;
-            _lastLow = -1;
+            ZigZagPoints = new List<Tuple<int, double>>();
             CalculateAll();
         }
 
         public void CalculateAll()
         {
+            if (_bars.Count < Depth) return; // Требуется минимальное количество баров для расчета
+
+            for (int i = 0; i < _bars.Count; i++) ZigZagBuffer[i] = double.NaN;
+            ZigZagPoints.Clear(); // Очищаем предыдущие точки перед новым расчетом
+
+            int lastPivotIdx = -1;
+            double lastPivotVal = 0;
+            int currentTrend = 0; // 0 = undefined, 1 = up, -1 = down
+
+            // Инициализация первой точки (если возможно)
+            if (_bars.Count > 0)
+            {
+                // Пытаемся найти первую точку, чтобы начать с нее
+                // Можно просто взять первый бар как начальную точку или более сложную логику
+                // Для простоты, начнем определение тренда с первого значимого движения
+            }
+
+
             for (int i = 0; i < _bars.Count; i++)
-                Calculate(i);
+            {
+                double high = _bars.HighPrices[i];
+                double low = _bars.LowPrices[i];
+
+                if (currentTrend == 0) 
+                {
+                    // Начальное определение тренда
+                    // Ищем первый значимый экстремум после Depth баров
+                    if (i < Depth) continue; // Пропускаем первые Depth баров для стабилизации
+
+                    // Проверяем, является ли текущий бар локальным максимумом или минимумом за Depth период
+                    double maxHighInDepth = 0;
+                    double minLowInDepth = double.MaxValue;
+                    for(int k=i-Depth+1; k<=i; k++) {
+                        if(_bars.HighPrices[k] > maxHighInDepth) maxHighInDepth = _bars.HighPrices[k];
+                        if(_bars.LowPrices[k] < minLowInDepth) minLowInDepth = _bars.LowPrices[k];
+                    }
+
+                    if (high == maxHighInDepth) { // Потенциальный первый High
+                        AddZigZagPoint(i, high);
+                        lastPivotVal = high;
+                        lastPivotIdx = i;
+                        currentTrend = -1; // Ожидаем Low
+                    } else if (low == minLowInDepth) { // Потенциальный первый Low
+                        AddZigZagPoint(i, low);
+                        lastPivotVal = low;
+                        lastPivotIdx = i;
+                        currentTrend = 1; // Ожидаем High
+                    }
+                }
+                else if (currentTrend == 1) // Текущий тренд вверх, ищем High
+                {
+                    if (high > lastPivotVal) { // Новый максимум в текущем восходящем движении
+                        lastPivotVal = high;
+                        lastPivotIdx = i;
+                        // Обновляем последнюю точку ZigZag, если она того же типа (High)
+                        if (ZigZagPoints.Any() && ZigZagPoints.Last().Item1 == lastPivotIdx) ZigZagPoints[ZigZagPoints.Count-1] = Tuple.Create(lastPivotIdx, lastPivotVal);
+                        else if (ZigZagPoints.Any() && ZigZagPoints.Last().Item2 < lastPivotVal) { // Если последняя точка была Low, а эта High выше
+                             // Это условие не совсем корректно для обновления, AddZigZagPoint должен справиться
+                        }
+                         // Не добавляем каждую новую свечу, только когда тренд меняется или точка обновляется
+                    } else if (low < lastPivotVal - DeviationInPips * _pipSizeValue) { // Смена тренда на Down
+                        // Добавляем предыдущий максимум перед сменой тренда
+                        if(lastPivotIdx != -1 && (!ZigZagPoints.Any() || ZigZagPoints.Last().Item1 != lastPivotIdx || ZigZagPoints.Last().Item2 != _bars.HighPrices[lastPivotIdx])) {
+                             AddZigZagPoint(lastPivotIdx, _bars.HighPrices[lastPivotIdx]); // Фиксируем последний High
+                        }
+                        currentTrend = -1; // Тренд сменился на нисходящий
+                        lastPivotVal = low;  // Новый экстремум (Low) для нового тренда
+                        lastPivotIdx = i;
+                        AddZigZagPoint(i, lastPivotVal); // Добавляем новую точку Low
+                    }
+                }
+                else // currentTrend == -1, текущий тренд вниз, ищем Low
+                {
+                     if (low < lastPivotVal) { // Новый минимум в текущем нисходящем движении
+                        lastPivotVal = low;
+                        lastPivotIdx = i;
+                        // Обновляем последнюю точку ZigZag, если она того же типа (Low)
+                         if (ZigZagPoints.Any() && ZigZagPoints.Last().Item1 == lastPivotIdx) ZigZagPoints[ZigZagPoints.Count-1] = Tuple.Create(lastPivotIdx, lastPivotVal);
+                         else if (ZigZagPoints.Any() && ZigZagPoints.Last().Item2 > lastPivotVal) {
+                            // Аналогично
+                         }
+                    } else if (high > lastPivotVal + DeviationInPips * _pipSizeValue) { // Смена тренда на Up
+                        // Добавляем предыдущий минимум
+                        if(lastPivotIdx != -1 && (!ZigZagPoints.Any() || ZigZagPoints.Last().Item1 != lastPivotIdx || ZigZagPoints.Last().Item2 != _bars.LowPrices[lastPivotIdx])) {
+                            AddZigZagPoint(lastPivotIdx, _bars.LowPrices[lastPivotIdx]); // Фиксируем последний Low
+                        }
+                        currentTrend = 1; // Тренд сменился на восходящий
+                        lastPivotVal = high; // Новый экстремум (High)
+                        lastPivotIdx = i;
+                        AddZigZagPoint(i, lastPivotVal); // Добавляем новую точку High
+                    }
+                }
+            }
+            // Добавляем последнюю незафиксированную точку, если она есть
+             if (lastPivotIdx != -1 && ZigZagPoints.Any() && ZigZagPoints.Last().Item1 != lastPivotIdx)
+            {
+                 AddZigZagPoint(lastPivotIdx, lastPivotVal);
+            }
+             else if (lastPivotIdx != -1 && !ZigZagPoints.Any()) // Если вообще не было точек
+            {
+                 AddZigZagPoint(lastPivotIdx, lastPivotVal);
+            }
         }
 
-        private void Calculate(int index)
+        // Логика AddZigZagPoint немного упрощена для ясности, основная логика формирования ZigZag в CalculateAll
+         private void AddZigZagPoint(int index, double value)
         {
-            ZigZagBuffer[index] = double.NaN;
-            if (index < Depth)
-                return;
-            double high = double.MinValue;
-            double low = double.MaxValue;
-            for (int j = index - Depth + 1; j <= index; j++)
+            // Если последняя точка на том же баре, заменяем ее, если новое значение "лучше"
+            if (ZigZagPoints.Any() && ZigZagPoints.Last().Item1 == index) 
             {
-                if (_bars.HighPrices[j] > high) high = _bars.HighPrices[j];
-                if (_bars.LowPrices[j] < low) low = _bars.LowPrices[j];
+                bool isReplacingHigher = value > ZigZagPoints.Last().Item2;
+                bool isReplacingLower = value < ZigZagPoints.Last().Item2;
+
+                // Определяем, была ли последняя точка High или Low (приблизительно)
+                bool lastPointWasHigh = false;
+                if (ZigZagPoints.Count >= 2) {
+                    lastPointWasHigh = ZigZagPoints.Last().Item2 > ZigZagPoints[ZigZagPoints.Count - 2].Item2;
+                } else if (ZigZagPoints.Any()) { // Если только одна точка, сравниваем с ценой открытия
+                    lastPointWasHigh = ZigZagPoints.Last().Item2 > _bars.OpenPrices[ZigZagPoints.Last().Item1];
+                }
+
+
+                if ((lastPointWasHigh && isReplacingHigher) || (!lastPointWasHigh && isReplacingLower)) {
+                    ZigZagPoints[ZigZagPoints.Count - 1] = Tuple.Create(index, value);
+                }
+                return; // Не добавляем новую, если на том же баре и не лучше
             }
-            if (_bars.HighPrices[index] == high && (index - _lastHigh) > Backstep)
-            {
-                ZigZagBuffer[index] = high;
-                _lastHigh = index;
+            
+            // Предотвращение добавления точки того же типа подряд, если значение не лучше
+            if (ZigZagPoints.Count >= 1) {
+                var lastZPoint = ZigZagPoints.Last();
+                bool lastWasHigh = false;
+                 if (ZigZagPoints.Count >= 2) {
+                    lastWasHigh = lastZPoint.Item2 > ZigZagPoints[ZigZagPoints.Count - 2].Item2;
+                } else { // Если только одна точка
+                    lastWasHigh = lastZPoint.Item2 > _bars.OpenPrices[lastZPoint.Item1]; // Примерное определение
+                }
+
+                bool currentIsHigh = value > lastZPoint.Item2; // Это не тип, а сравнение значений
+
+                // Если последняя точка была High и новая точка тоже High (value > lastZPoint.Value)
+                if (lastWasHigh && value > lastZPoint.Item2) {
+                    ZigZagPoints[ZigZagPoints.Count -1] = Tuple.Create(index, value); // Заменяем последнюю High на более высокую High
+                    if(index < ZigZagBuffer.Length) ZigZagBuffer[index] = value;
+                    return;
+                }
+                // Если последняя точка была Low и новая точка тоже Low (value < lastZPoint.Value)
+                if (!lastWasHigh && value < lastZPoint.Item2) {
+                     ZigZagPoints[ZigZagPoints.Count -1] = Tuple.Create(index, value); // Заменяем последнюю Low на более низкую Low
+                     if(index < ZigZagBuffer.Length) ZigZagBuffer[index] = value;
+                     return;
+                }
             }
-            else if (_bars.LowPrices[index] == low && (index - _lastLow) > Backstep)
-            {
-                ZigZagBuffer[index] = low;
-                _lastLow = index;
-            }
+
+
+            ZigZagPoints.Add(Tuple.Create(index, value));
+            if(index < ZigZagBuffer.Length) ZigZagBuffer[index] = value;
         }
     }
 }
-
