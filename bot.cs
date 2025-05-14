@@ -47,12 +47,6 @@ namespace cAlgo.Robots
         [Parameter("Trailing Start (в пунктах)", DefaultValue = 50, MinValue = 20, MaxValue = 200)]
         public double TrailingStartInPips { get; set; }
 
-        [Parameter("Min Profit Trail (пунктов)", DefaultValue = 50, MinValue = 10, MaxValue = 500)]
-        public double MinProfitTrailInPips { get; set; }
-
-        [Parameter("Rollback Trail (пунктов)", DefaultValue = 30, MinValue = 5, MaxValue = 200)]
-        public double RollbackTrailInPips { get; set; }
-
         // --- Внутренние переменные ---
         private DateTime _lastTradeDate;
         private Symbol _symbol;
@@ -61,8 +55,6 @@ namespace cAlgo.Robots
         private ExponentialMovingAverage _emaFast;
         private ExponentialMovingAverage _emaSlow;
         private MarketContext _currentContext = MarketContext.Undetermined;
-        private Dictionary<long, double> positionHighs = new Dictionary<long, double>();
-        private Dictionary<long, double> positionLows = new Dictionary<long, double>();
 
         public enum MarketContext
         {
@@ -264,52 +256,7 @@ namespace cAlgo.Robots
                     continue;
                 }
 
-                // --- Динамический трейлинг по откату ---
-                double currentPrice = (position.TradeType == TradeType.Buy) ? _symbol.Bid : _symbol.Ask;
-                double entryPrice = position.EntryPrice;
-                double minProfitTrail = MinProfitTrailInPips * _symbol.PipSize;
-                double rollbackTrail = RollbackTrailInPips * _symbol.PipSize;
-
-                if (position.TradeType == TradeType.Buy)
-                {
-                    // Обновляем максимум
-                    if (!positionHighs.ContainsKey(position.Id))
-                        positionHighs[position.Id] = entryPrice;
-                    if (currentPrice > positionHighs[position.Id])
-                        positionHighs[position.Id] = currentPrice;
-
-                    double profitFromEntry = positionHighs[position.Id] - entryPrice;
-                    double rollback = positionHighs[position.Id] - currentPrice;
-
-                    if (profitFromEntry >= minProfitTrail && rollback >= rollbackTrail)
-                    {
-                        ClosePosition(position);
-                        Print($"Лонг позиция ID:{position.Id} закрыта по откату: profitFromEntry={profitFromEntry/_symbol.PipSize:F1} пп, rollback={rollback/_symbol.PipSize:F1} пп");
-                        positionHighs.Remove(position.Id);
-                        continue;
-                    }
-                }
-                else // Sell
-                {
-                    // Обновляем минимум
-                    if (!positionLows.ContainsKey(position.Id))
-                        positionLows[position.Id] = entryPrice;
-                    if (currentPrice < positionLows[position.Id])
-                        positionLows[position.Id] = currentPrice;
-
-                    double profitFromEntry = entryPrice - positionLows[position.Id];
-                    double rollback = currentPrice - positionLows[position.Id];
-
-                    if (profitFromEntry >= minProfitTrail && rollback >= rollbackTrail)
-                    {
-                        ClosePosition(position);
-                        Print($"Шорт позиция ID:{position.Id} закрыта по откату: profitFromEntry={profitFromEntry/_symbol.PipSize:F1} пп, rollback={rollback/_symbol.PipSize:F1} пп");
-                        positionLows.Remove(position.Id);
-                        continue;
-                    }
-                }
-
-                // --- Обычный трейлинг стоп ---
+                // Трейлинг стоп
                 if (position.TradeType == TradeType.Buy)
                 {
                     double distance = position.EntryPrice - position.StopLoss.Value;
