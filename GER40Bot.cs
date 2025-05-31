@@ -46,7 +46,7 @@ namespace cAlgo.Robots
         private CommodityChannelIndex _cci;
         private bool _tradeExecutedToday = false;
         private int _entryHourUTC;
-        private cAlgo.API.Internals.Bars _h1Series; // For S/R calculation
+        private Bars _h1Series; // For S/R calculation
 
         protected override void OnStart()
         {
@@ -64,7 +64,7 @@ namespace cAlgo.Robots
             Print($"Calculated UTC Entry Hour: {_entryHourUTC}");
 
             _cci = Indicators.CommodityChannelIndex(CCIPeriod);
-            _h1Series = MarketData.GetBars(TimeFrame.Hour1);
+            _h1Series = MarketData.GetBars(TimeFrame.Hour);
 
             Timer.Start(TimeSpan.FromHours(1)); 
         }
@@ -299,7 +299,7 @@ namespace cAlgo.Robots
                     {
                         if (newStopLossPrice > position.EntryPrice) 
                         {
-                            position.ModifyStopLossPrice(newStopLossPrice, StopTriggerMethod.Trade);
+                            position.ModifyStopLossPrice(newStopLossPrice);
                             Print($"Trailing Buy SL for {position.Id} to {newStopLossPrice}");
                         }
                     }
@@ -311,7 +311,7 @@ namespace cAlgo.Robots
                     {
                         if (newStopLossPrice < position.EntryPrice)
                         {
-                             position.ModifyStopLossPrice(newStopLossPrice, StopTriggerMethod.Trade);
+                             position.ModifyStopLossPrice(newStopLossPrice);
                              Print($"Trailing Sell SL for {position.Id} to {newStopLossPrice}");
                         }
                     }
