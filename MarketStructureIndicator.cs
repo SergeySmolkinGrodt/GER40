@@ -11,10 +11,10 @@ namespace cAlgo
         [Parameter("Swing Period", DefaultValue = 5, MinValue = 2)]
         public int SwingPeriod { get; set; }
 
-        private readonly List<SwingPoint> _structurePoints = new List<SwingPoint>();
+        public List<SwingPoint> StructurePoints { get; } = new List<SwingPoint>();
         private readonly List<SwingPoint> _allPivots = new List<SwingPoint>();
         private readonly HashSet<string> _processedPivots = new HashSet<string>();
-        private readonly List<BosEvent> _bosEvents = new List<BosEvent>();
+        public List<BosEvent> BosEvents { get; } = new List<BosEvent>();
 
         protected override void Initialize()
         {
@@ -92,18 +92,18 @@ namespace cAlgo
         
         private void BuildStructure()
         {
-            _structurePoints.Clear();
+            StructurePoints.Clear();
             if (_allPivots.Count == 0) return;
 
             var lastPoint = _allPivots[0];
-            _structurePoints.Add(lastPoint);
+            StructurePoints.Add(lastPoint);
 
             for (int i = 1; i < _allPivots.Count; i++)
             {
                 var currentPoint = _allPivots[i];
                 if (currentPoint.Type != lastPoint.Type)
                 {
-                    _structurePoints.Add(currentPoint);
+                    StructurePoints.Add(currentPoint);
                     lastPoint = currentPoint;
                 }
                 else
@@ -111,7 +111,7 @@ namespace cAlgo
                     if ((currentPoint.Type == SwingType.High && currentPoint.Price > lastPoint.Price) ||
                         (currentPoint.Type == SwingType.Low && currentPoint.Price < lastPoint.Price))
                     {
-                        _structurePoints[_structurePoints.Count - 1] = currentPoint;
+                        StructurePoints[StructurePoints.Count - 1] = currentPoint;
                         lastPoint = currentPoint;
                     }
                 }
@@ -120,13 +120,13 @@ namespace cAlgo
 
         private void DetectBos()
         {
-            _bosEvents.Clear();
+            BosEvents.Clear();
 
-            for (int i = 2; i < _structurePoints.Count; i++)
+            for (int i = 2; i < StructurePoints.Count; i++)
             {
-                var prevPoint = _structurePoints[i - 2];
-                var midPoint = _structurePoints[i - 1];
-                var currentPoint = _structurePoints[i];
+                var prevPoint = StructurePoints[i - 2];
+                var midPoint = StructurePoints[i - 1];
+                var currentPoint = StructurePoints[i];
                 
                 // Bullish BOS: New high is higher than the previous high.
                 if (currentPoint.Type == SwingType.High && midPoint.Type == SwingType.Low && prevPoint.Type == SwingType.High)
@@ -141,7 +141,7 @@ namespace cAlgo
                             IsConfirmed = true,
                             IsBullish = true
                         };
-                        _bosEvents.Add(bos);
+                        BosEvents.Add(bos);
                     }
                 }
                 // Bearish BOS: New low is lower than the previous low.
@@ -157,15 +157,15 @@ namespace cAlgo
                             IsConfirmed = true,
                             IsBullish = false
                         };
-                        _bosEvents.Add(bos);
+                        BosEvents.Add(bos);
                     }
                 }
             }
             
             // Check for unconfirmed BOS at the very end of the structure
-            if (_structurePoints.Count > 1)
+            if (StructurePoints.Count > 1)
             {
-                var lastStructurePoint = _structurePoints[_structurePoints.Count - 1];
+                var lastStructurePoint = StructurePoints[StructurePoints.Count - 1];
                 var lastPriceBarIndex = Bars.Count - 1;
                 var lastPrice = Bars.ClosePrices.LastValue;
 
@@ -173,11 +173,11 @@ namespace cAlgo
                 SwingPoint lastMajorPivot = null;
                 if(lastStructurePoint.Type == SwingType.Low) // Looking for bullish BOS
                 {
-                    lastMajorPivot = _structurePoints.Where(p => p.Type == SwingType.High).LastOrDefault();
+                    lastMajorPivot = StructurePoints.Where(p => p.Type == SwingType.High).LastOrDefault();
                 }
                 else // Looking for bearish BOS
                 {
-                    lastMajorPivot = _structurePoints.Where(p => p.Type == SwingType.Low).LastOrDefault();
+                    lastMajorPivot = StructurePoints.Where(p => p.Type == SwingType.Low).LastOrDefault();
                 }
 
                 if (lastMajorPivot != null)
@@ -187,7 +187,7 @@ namespace cAlgo
 
                     if (isBullishBos || isBearishBos)
                     {
-                        _bosEvents.Add(new BosEvent
+                        BosEvents.Add(new BosEvent
                         {
                             Level = lastMajorPivot.Price,
                             StartIndex = lastMajorPivot.Index,
@@ -204,21 +204,21 @@ namespace cAlgo
         {
             Chart.RemoveAllObjects();
 
-            for (int i = 0; i < _structurePoints.Count; i++)
+            for (int i = 0; i < StructurePoints.Count; i++)
             {
-                var point = _structurePoints[i];
+                var point = StructurePoints[i];
                 var iconName = $"swing_{point.Index}";
                 Chart.DrawIcon(iconName, ChartIconType.Circle, point.Index, point.Price, Color.Gray);
 
                 if (i > 0)
                 {
-                    var prevPoint = _structurePoints[i - 1];
+                    var prevPoint = StructurePoints[i - 1];
                     var lineName = $"line_{prevPoint.Index}_{point.Index}";
                     Chart.DrawTrendLine(lineName, prevPoint.Index, prevPoint.Price, point.Index, point.Price, Color.Gray, 1, LineStyle.Lines);
                 }
             }
 
-            foreach (var bos in _bosEvents)
+            foreach (var bos in BosEvents)
             {
                 var lineName = $"bos_{bos.StartIndex}";
                 var textName = $"bos_text_{bos.StartIndex}";
